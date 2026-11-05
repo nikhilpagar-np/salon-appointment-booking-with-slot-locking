@@ -1326,8 +1326,8 @@ const S = {
 const API_BASE = '/api';
 let SERVER_SLOT_STATUS = {};
 async function apiRequest(path, options={}){
-  const headers={'Content-Type':'application/json','X-User-Id':U?.id||'anonymous',...(options.headers||{})};
-  const response=await fetch(API_BASE+path,{...options,headers});
+  const headers={'Content-Type':'application/json',...(options.headers||{})};
+  const response=await fetch(API_BASE+path,{...options,headers,credentials:'include'});
   const data=await response.json().catch(()=>({}));
   if(!response.ok){ const e=new Error(data.error||'Request failed'); e.status=response.status; e.data=data; throw e; }
   return data;
@@ -1570,47 +1570,33 @@ function notif(title, msg, type='info'){
 // ══════════════════════════════════════
 // AUTH
 // ══════════════════════════════════════
-function custReg(){
+async function custReg(){
   const fn=gv('rn-f'),ln=gv('rn-l'),em=gv('re-mail'),ph=gv('rph'),ct=gv('rc'),pw=gv('rpw');
   if(!fn||!em||!ph||!ct||!pw){notif('Missing Fields','Please fill all fields','error');return;}
-  const cs=S.custs();
-  if(cs.find(c=>c.email===em)){notif('Error','Email already registered','error');return;}
-  const u={id:'c'+Date.now(),type:'customer',name:fn+' '+ln,email:em,phone:ph,city:ct,password:pw};
-  cs.push(u);S.scusts(cs);U=u;S.su(u);
-  updateNav();closeModal('mr');
-  notif('Welcome! 🎉','Account created','success');go('pg-salons');
+  try{
+    const {user}=await apiRequest('/auth/register',{method:'POST',body:JSON.stringify({name:fn+' '+ln,email:em,password:pw,role:'CUSTOMER'})});
+    U={...user,type:'customer',phone:ph,city:ct}; S.su(U); updateNav(); closeModal('mr');
+    notif('Welcome! 🎉','Account created securely','success'); go('pg-salons');
+  }catch(e){notif('Registration Failed',e.data?.error||e.message,'error');}
 }
-function custLogin(){
+async function custLogin(){
   const em=gv('li-email'),pw=gv('li-pw');
-  const u=S.custs().find(c=>c.email===em&&c.password===pw);
-  if(!u){notif('Login Failed','Invalid credentials','error');return;}
-  U=u;S.su(u);updateNav();closeModal('ml');
-  notif('Welcome Back! 👋',`Hello ${u.name.split(' ')[0]}!`,'success');go('pg-salons');
+  try{const {user}=await apiRequest('/auth/login',{method:'POST',body:JSON.stringify({email:em,password:pw})}); U={...user,type:'customer'}; S.su(U); updateNav(); closeModal('ml'); notif('Welcome Back! 👋',`Hello ${user.name.split(' ')[0]}!`,'success'); go('pg-salons');}
+  catch(e){notif('Login Failed',e.data?.error||e.message,'error');}
 }
-function ownerReg(){
+async function ownerReg(){
   const sn=gv('os-name'),on=gv('os-own'),ph=gv('os-ph'),ct=gv('os-ct'),pl=gv('os-plan'),op=gv('os-op'),cl=gv('os-cl'),em=gv('os-em'),pw=gv('os-pw');
   if(!sn||!on||!ph||!ct||!em||!pw){notif('Missing Fields','Please fill all fields','error');return;}
-  const os=S.owners();
-  if(os.find(o=>o.email===em)){notif('Error','Email already registered','error');return;}
-  const u={id:'o'+Date.now(),type:'owner',shopName:sn,name:on,phone:ph,city:ct,plan:pl,opens:op,closes:cl,email:em,password:pw};
-  os.push(u);S.sowners(os);U=u;S.su(u);
-  updateNav();closeModal('mo');
-  notif('Shop Registered! 🎊',`${sn} is now on Book My Barber!`,'success');go('pg-owner');
+  try{const {user}=await apiRequest('/auth/register',{method:'POST',body:JSON.stringify({name:on,email:em,password:pw,role:'OWNER',salonId:'salon-demo'})}); U={...user,type:'owner',shopName:sn,phone:ph,city:ct,plan:pl,opens:op,closes:cl}; S.su(U); updateNav(); closeModal('mo'); notif('Shop Registered! 🎊',`${sn} is now on Book My Barber!`,'success'); go('pg-owner');}
+  catch(e){notif('Registration Failed',e.data?.error||e.message,'error');}
 }
-function ownerLogin(){
+async function ownerLogin(){
   const em=gv('oli-email'),pw=gv('oli-pw');
-  const u=S.owners().find(o=>o.email===em&&o.password===pw);
-  if(!u){notif('Login Failed','Invalid credentials','error');return;}
-  U=u;S.su(u);updateNav();closeModal('ml');
-  notif('Welcome Back! 👋',`Dashboard for ${u.shopName}`,'success');go('pg-owner');
+  try{const {user}=await apiRequest('/auth/login',{method:'POST',body:JSON.stringify({email:em,password:pw})}); if(user.role!=='OWNER'){throw new Error('Owner account required');} U={...user,type:'owner'}; S.su(U); updateNav(); closeModal('ml'); notif('Welcome Back! 👋',`Dashboard for ${user.name}`,'success'); go('pg-owner');}
+  catch(e){notif('Login Failed',e.data?.error||e.message,'error');}
 }
-function adminLogin(){
-  U={type:'admin',name:'Admin'};S.su(U);updateNav();
-  notif('Admin Mode 👑','Platform admin loaded','success');go('pg-admin');
-}
-function logout(){
-  U=null;S.cu();updateNav();go('pg-home');notif('Logged Out','See you soon! 👋');
-}
+function adminLogin(){ notif('Admin Login','Use the configured administrator account; demo admin access is disabled.','info'); }
+async function logout(){ try{await apiRequest('/auth/logout',{method:'POST'});}catch(_e){} U=null; S.cu(); updateNav(); go('pg-home'); notif('Logged Out','See you soon!'); }
 
 function updateNav(){
   const nc=document.getElementById('nav-center');
@@ -2055,7 +2041,7 @@ function mkBooking(sv){
 async function finishBook(bk,sv){
   try{ await apiConfirmBooking(bk); }
   catch(e){ notif('Booking Not Confirmed','Your slot lock expired or is no longer available. Please choose another slot.','error'); BD.lockId=null; renderStep(2); return; }
-  const bks=S.bks();bks.push(bk);S.sbks(bks);
+  // The API is the source of truth; localStorage is not used for production bookings.
   const sl=S.slots();
   if(!sl[bk.sid])sl[bk.sid]={};
   if(!sl[bk.sid][bk.date])sl[bk.sid][bk.date]=[];
@@ -2140,10 +2126,16 @@ function showSuccess(bk,sv,salon){
 // ══════════════════════════════════════
 // CUSTOMER DASHBOARD
 // ══════════════════════════════════════
-function renderCustDash(){
+async function renderCustDash(){
   if(!U||U.type!=='customer'){go('pg-home');return;}
   document.getElementById('cust-welcome').textContent=`Welcome back, ${U.name}!`;
-  const bks=S.bks().filter(b=>b.uid===U.id&&b.status!=='cancelled');
+  let bks=[];
+  try{
+    const rows=await apiRequest('/appointments/me');
+    bks=rows.map(b=>({id:b.id,sName:b.salon_name,vName:b.service_name,vIcon:'💇',vPrice:b.service_price,date:b.starts_at.slice(0,10),time:b.starts_at.slice(11,16),pay:b.payment_status==='VERIFIED'?'online':'at_salon',status:b.status.toLowerCase(),tokenPaid:false,uid:U.id,at:b.created_at}));
+  }catch(e){ notif('Unable to load bookings','Please try again after signing in.','error'); }
+  const active=bks.filter(b=>b.status!=='cancelled');
+  bks=active;
   const online=bks.filter(b=>b.pay==='online');
   const offline=bks.filter(b=>b.pay==='at_salon');
   const spent=bks.reduce((a,b)=>a+b.vPrice,0);
@@ -2752,7 +2744,7 @@ setInterval(purgeExpiredReservations, 30000);
   </div>
   <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
     <span style="background:var(--gold-glow);border:1px solid var(--gold-border);color:var(--gold);font-size:.66rem;font-weight:700;padding:3px 10px;border-radius:50px;letter-spacing:.05em">MVP v2.1 · Investor Demo</span>
-    <span style="color:var(--text3);font-size:.68rem">Frontend Only · LocalStorage</span>
+    <span style="color:var(--text3);font-size:.68rem">Authenticated API · Transactional Database</span>
   </div>
 </div>
 

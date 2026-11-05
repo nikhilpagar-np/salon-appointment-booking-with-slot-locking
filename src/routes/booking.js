@@ -1,0 +1,13 @@
+const express = require('express');
+const controller = require('../controllers/bookingController');
+const { requireAuth, requireRole, asyncRoute } = require('../middleware/security');
+const router = express.Router();
+router.get('/slots/status', requireAuth, asyncRoute(controller.status));
+router.post('/holds', requireAuth, requireRole('CUSTOMER'), asyncRoute(controller.hold));
+router.delete('/holds/:holdId', requireAuth, requireRole('CUSTOMER'), asyncRoute(controller.release));
+router.post('/appointments', requireAuth, requireRole('CUSTOMER'), asyncRoute(controller.confirm));
+router.get('/appointments/me', requireAuth, requireRole('CUSTOMER'), asyncRoute(controller.customerBookings));
+router.get('/appointments/salon', requireAuth, requireRole('OWNER', 'ADMIN'), asyncRoute(controller.salonBookings));
+router.post('/payments/intents', requireAuth, requireRole('CUSTOMER'), asyncRoute(controller.createPaymentIntent));
+router.post('/payments/webhook', express.raw({ type: 'application/json' }), asyncRoute(controller.paymentWebhook));
+module.exports = router;

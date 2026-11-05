@@ -1,13 +1,15 @@
 {
   "name": "salon-appointment-booking-with-slot-locking",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Salon appointment booking with transactional temporary slot locking",
+  "description": "Secure salon appointment booking with authenticated sessions, staff availability, temporary holds, and transactional confirmation",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test/*.test.js"
+    "migrate": "node -e \"require('./src/database/db').migrate()\"",
+    "test": "node --test test/*.test.js",
+    "test:all": "npm test"
   },
   "engines": { "node": ">=18" },
   "dependencies": {
