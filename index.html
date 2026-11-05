@@ -1225,6 +1225,7 @@ input[type=range]{width:100%;accent-color:var(--gold);height:4px;cursor:pointer;
           <div class="spinner"></div> Processing...
         </div>
         <button class="btn btn-bl" style="width:100%;justify-content:center" id="pay-btn" onclick="doPayment()">🔒 Pay Now</button>
+        <button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:8px;display:none" id="pay-fail-btn" onclick="failPayment()">Simulate Payment Failure</button>
       </div>
     </div>
   </div>
@@ -1321,6 +1322,39 @@ const S = {
 };
 
 // ══════════════════════════════════════
+// SERVER BOOKING API
+const API_BASE = '/api';
+let SERVER_SLOT_STATUS = {};
+async function apiRequest(path, options={}){
+  const headers={'Content-Type':'application/json','X-User-Id':U?.id||'anonymous',...(options.headers||{})};
+  const response=await fetch(API_BASE+path,{...options,headers});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok){ const e=new Error(data.error||'Request failed'); e.status=response.status; e.data=data; throw e; }
+  return data;
+}
+function serverSlotKey(sid,date,time){return `${sid}||${date}||${time}`;}
+async function refreshServerSlotStatuses(){
+  if(!SEL||!BD?.date)return;
+  const slots=genSlots(SEL.opens,SEL.closes,30);
+  await Promise.all(slots.map(async time=>{
+    try{SERVER_SLOT_STATUS[serverSlotKey(SEL.id,BD.date,time)]=await apiRequest(`/slots/status?salonId=${encodeURIComponent(SEL.id)}&date=${encodeURIComponent(BD.date)}&time=${encodeURIComponent(time)}`);}
+    catch(_e){}
+  }));
+}
+async function apiLockSlot(sid,date,time){
+  return apiRequest('/locks',{method:'POST',body:JSON.stringify({salonId:sid,date,time,userName:U?.name||''})});
+}
+async function apiReleaseSlot(lockId){
+  if(!lockId)return;
+  try{await apiRequest(`/locks/${encodeURIComponent(lockId)}`,{method:'DELETE'});}catch(_e){}
+}
+async function apiConfirmBooking(bk){
+  return apiRequest('/bookings',{method:'POST',body:JSON.stringify({
+    salonId:bk.sid,date:bk.date,time:bk.time,bookingId:bk.id,lockId:BD.lockId,
+    paymentStatus:bk.tokenPaid||bk.pay==='online'?'paid':'pending',payload:bk
+  })});
+}
+
 // SLOT LOCKING SYSTEM
 // ══════════════════════════════════════
 const BARBER_CAPACITY = 2; // chairs per barber shop
@@ -1331,6 +1365,11 @@ let currentLockId = null;
 function slotKey(sid, date, time){ return `${sid}||${date}||${time}`; }
 
 function getSlotStatus(sid, date, time){
+  const serverStatus=SERVER_SLOT_STATUS[serverSlotKey(sid,date,time)];
+  if(serverStatus){
+    const mine=BD?.lockId&&BD.sid===sid&&BD.date===date&&BD.time===time ? {lockId:BD.lockId,expiresAt:BD.lockExpires,uid:U?.id} : null;
+    return {status:serverStatus.available>0||mine?'available':'reserved',confirmed:serverStatus.confirmed,onlineCount:serverStatus.confirmed,walkinCount:0,reserved:serverStatus.reserved,myReservation:mine};
+  }
   // Count confirmed online bookings
   const sl = S.slots();
   const onlineCount = ((sl[sid]||{})[date]||[]).filter(t=>t===time).length;
@@ -1387,8 +1426,9 @@ function lockSlot(sid, date, time){
   return {lockId, expiresAt};
 }
 
-function releaseSlot(sid, date, time, lockId){
+async function releaseSlot(sid, date, time, lockId){
   if(!lockId) return;
+  await apiReleaseSlot(lockId);
   const res = S.reservations();
   const key = slotKey(sid, date, time);
   if(res[key] && res[key][lockId]){
@@ -1693,7 +1733,8 @@ function startBook(sid,vid){
   renderStep(1);openModal('mb');
 }
 
-function renderStep(step){
+async function renderStep(step){
+  if(step===2) await refreshServerSlotStatuses();
   document.getElementById('bk-title').textContent=`Book at ${SEL.name}`;
   const stHtml=`<div class="steps">${['Service','Date','Payment','Token','Confirm'].map((l,i)=>`
     <div class="step ${step>i+1?'done':step===i+1?'active':''}">
@@ -1877,25 +1918,22 @@ function renderStep(step){
 }
 
 function pickSvc(vid,el){BD.vid=vid;document.querySelectorAll('.svc-item').forEach(e=>e.classList.remove('sel'));el.classList.add('sel')}
-function pickSlot(el, sl, sid, date){
-  // Release previous lock if any
-  if(BD.lockId){
-    releaseSlot(sid, BD.date||date, BD.time, BD.lockId);
-    BD.lockId = null;
-    if(lockTimerInterval){ clearInterval(lockTimerInterval); lockTimerInterval = null; }
+async function pickSlot(el, sl, sid, date){
+  if(BD.lockId){ await releaseSlot(sid, BD.date||date, BD.time, BD.lockId); BD.lockId=null; }
+  if(lockTimerInterval){ clearInterval(lockTimerInterval); lockTimerInterval=null; }
+  try{
+    const lockResult=await apiLockSlot(sid,date,sl);
+    BD.time=sl; BD.lockId=lockResult.lockId; BD.lockExpires=lockResult.expiresAt;
+    SERVER_SLOT_STATUS[serverSlotKey(sid,date,sl)]=lockResult;
+    document.querySelectorAll('.slot').forEach(e=>e.classList.remove('sel'));
+    el.classList.add('sel');
+    renderLockBanner(lockResult.expiresAt,sid,date,sl,lockResult.lockId);
+    startLockTimer(lockResult.expiresAt,sid,date,sl,lockResult.lockId);
+    notif('Slot Reserved! ⏳', `${sl} locked for 5 minutes. Complete your booking!`, 'info');
+  }catch(e){
+    showSlotPopup('⏳','Slot Unavailable','Another customer has taken this capacity. Please choose another time.');
+    renderStep(2);
   }
-  // Attempt to lock
-  const lockResult = lockSlot(sid, date, sl);
-  if(!lockResult) return; // popup shown inside lockSlot
-  BD.time = sl;
-  BD.lockId = lockResult.lockId;
-  BD.lockExpires = lockResult.expiresAt;
-  document.querySelectorAll('.slot').forEach(e=>e.classList.remove('sel'));
-  el.classList.add('sel');
-  // Show lock timer banner
-  renderLockBanner(lockResult.expiresAt, sid, date, sl, lockResult.lockId);
-  startLockTimer(lockResult.expiresAt, sid, date, sl, lockResult.lockId);
-  notif('Slot Reserved! ⏳', `${sl} locked for 5 minutes. Complete your booking!`, 'info');
 }
 function renderLockBanner(expiresAt, sid, date, sl, lockId){
   const existing = document.getElementById('lock-banner');
@@ -1949,12 +1987,14 @@ function doProceed(){
     document.getElementById('pay-amt').textContent='₹'+TOKEN_AMOUNT+' (Token)';
     document.getElementById('pay-proc').style.display='none';
     document.getElementById('pay-btn').style.display='flex';
+    document.getElementById('pay-fail-btn').style.display='flex';
     openModal('mpay');
   } else if(BD.payment==='online'){
     PENDING_BK=bk;
     document.getElementById('pay-amt').textContent='₹'+sv.price;
     document.getElementById('pay-proc').style.display='none';
     document.getElementById('pay-btn').style.display='flex';
+    document.getElementById('pay-fail-btn').style.display='flex';
     openModal('mpay');
   } else {
     finishBook(bk,sv);
@@ -1963,6 +2003,7 @@ function doProceed(){
 
 function doPayment(){
   document.getElementById('pay-btn').style.display='none';
+  document.getElementById('pay-fail-btn').style.display='none';
   document.getElementById('pay-proc').style.display='flex';
   setTimeout(()=>{
     closeModal('mpay');
@@ -1972,6 +2013,19 @@ function doPayment(){
       PENDING_BK=null;
     }
   },2200);
+}
+
+async function failPayment(){
+  if(!PENDING_BK)return;
+  document.getElementById('pay-btn').style.display='none';
+  document.getElementById('pay-fail-btn').style.display='none';
+  try{ await apiRequest('/bookings',{method:'POST',body:JSON.stringify({
+    salonId:PENDING_BK.sid,date:PENDING_BK.date,time:PENDING_BK.time,
+    bookingId:PENDING_BK.id,lockId:BD.lockId,paymentStatus:'failed',payload:PENDING_BK
+  })}); }catch(_e){}
+  PENDING_BK=null; BD.lockId=null; closeModal('mpay');
+  notif('Payment Failed','Your slot has been released. You can choose another time.','error');
+  renderStep(2);
 }
 
 function mkBooking(sv){
@@ -1998,7 +2052,9 @@ function mkBooking(sv){
   };
 }
 
-function finishBook(bk,sv){
+async function finishBook(bk,sv){
+  try{ await apiConfirmBooking(bk); }
+  catch(e){ notif('Booking Not Confirmed','Your slot lock expired or is no longer available. Please choose another slot.','error'); BD.lockId=null; renderStep(2); return; }
   const bks=S.bks();bks.push(bk);S.sbks(bks);
   const sl=S.slots();
   if(!sl[bk.sid])sl[bk.sid]={};
